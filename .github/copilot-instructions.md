@@ -1,65 +1,49 @@
-# Dynatrace MCP Server
+# Dynatrace MCP Server — copilot instructions
 
-You are a Developer working on the Dynatrace Model-Context-Protocol (MCP) Server project.
+Short, actionable guidance for AI coding agents working on this repo.
 
-It is written in TypeScript and uses Node.js as its runtime. You need to understand how to write MCP server code based on https://www.npmjs.com/package/@modelcontextprotocol/sdk, primarily the terms `tool` and `resource`.
+1. Big picture
+  - This is a TypeScript Node.js MCP (Model-Context-Protocol) server that exposes a set of "tools" (MCP capabilities) to consumers.
+  - `src/index.ts` boots the MCP server, wires transports (stdio or HTTP), registers tools and handles startup checks (Dynatrace connection test, telemetry, graceful shutdown).
+  - Each capability lives in `src/capabilities/*.ts`. Capabilities typically call into Dynatrace via an authenticated `HttpClient` created by `src/authentication/dynatrace-clients.ts`.
 
-## Guidelines
+2. Key patterns and examples
+  - Tool registration uses a small helper in `src/index.ts`: each tool is defined with a Zod params schema and a callback that returns text content. Example: the `execute_dql` tool (see `src/index.ts`) expects `{ dqlStatement: string }` and calls `executeDql` in `src/capabilities/execute-dql.ts`.
+  - Always use Zod shapes for tool params (the server relies on these for validation). Example snippet: tool('list_vulnerabilities', ..., { riskScore: z.number().optional().default(8.0) }, async ({ riskScore }) => ... )
+  - Create authenticated clients via `createDtHttpClient(environment, scopes, clientId, clientSecret, dtPlatformToken)` from `src/authentication/dynatrace-clients.ts`. When adding a tool, add only the minimal extra scopes required by that tool (see how `execute_dql` concatenates many `storage:*:read` scopes).
+  - Error handling: check for Dynatrace SDK errors using `isClientRequestError(error)` imported from `@dynatrace-sdk/shared-errors` and return user-friendly messages using the handler in `src/index.ts`.
+  - Environment detection: `src/getDynatraceEnv.ts` enforces required env vars (DT_ENVIRONMENT) and defaulting logic (e.g., grail budget). Read it before assuming envs are present.
 
-- Follow the user's requirements carefully & to the letter.
-- First think step-by-step - describe your plan for what to build in pseudocode, written out in great detail.
-- Confirm, then write code!
-- Focus on easy and readability code, over being performant.
-- Fully implement all requested functionality.
-- Leave NO todo's, placeholders or missing pieces.
-- Ensure code is complete! Verify thoroughly finalised.
-- Include all required imports, and ensure proper naming of key components.
-- Be concise, minimize any other prose.
-- If you think there might not be a correct answer, you say so.
-- If you do not know the answer, say so, instead of guessing.
-- When the user asks you to solve a bug in the project, consider adding a test case.
+3. Build, test & run (developer flows)
+  - Build: `npm run build` (runs `tsc --build`). Output: `dist/`.
+  - Run locally (compiled): `npm start` will run `dist/index.js` (binary `mcp-server-dynatrace`).
+  - Dev/watch: `npm run watch` (tsc watch).
+  - Tests: `npm test` (jest). Integration tests: `npm run test:integration` (runs in-band). Unit tests: `npm run test:unit`.
+  - Run the server in HTTP mode for remote testing: `node ./dist/index.js --http --port 3000` (or use the `--server` alias). By default the server runs in stdio mode.
 
-## Repo Structure
+4. Project-specific conventions
+  - Tool callbacks should return user-facing text via the `tool` helper (not raw objects). The helper wraps the response into MCP `CallToolResult` and handles telemetry and errors.
+  - When creating a `dtClient`, use `scopesBase.concat(...)` to extend minimum scopes. Keep scope changes minimal and document them in `README.md` and in `CHANGELOG.md` when adding features that require new scopes.
+  - DQL guidance: capabilities that execute DQL must handle cost/scan-size reporting (see `execute_dql` which warns based on `scannedBytes`). Preserve similar cost-awareness in new DQL-capable tools.
+  - Proxy configuration: network proxies are configured by `src/utils/proxy-config.ts` (calls `setGlobalDispatcher` for undici). Call it early if you add networking logic that must respect system proxies.
 
-The repository is structured as follows:
+5. Integration points & external dependencies
+  - Dynatrace: uses OAuth or platform token via `createDtHttpClient`. Many tools call `@dynatrace-sdk/*` clients (query, automation, davis-copilot). Respect token scopes and auth flow.
+  - MCP SDK: `@modelcontextprotocol/sdk` is used for server/transport and typing. Understand the difference between `StdioServerTransport` and `StreamableHTTPServerTransport` as used in `src/index.ts`.
+  - Telemetry: `src/utils/telemetry-openkit.ts` handles OpenKit telemetry initialization and error tracking.
 
-- `src/`: Contains the source code for the MCP server.
-- `src/index.ts`: Main entrypoint of the MCP server. Defines tools and OAuth clients.
-- `src/capabilities/*.ts`: Contains the actual tool definition and implementation.
-- `src/dynatrace-clients.ts`: Contains OAuth client creation and configuration.
-- `src/getDynatraceEnv.ts`: Contains environment detection utilities.
-- `dist/`: Output directory for compiled JavaScript files.
+6. When adding features or fixing bugs (practical checklist)
+  - Update `src/capabilities/*` and register new tool in `src/index.ts` using the existing `tool(...)` pattern (Zod schema + async handler).
+  - Add any new Dynatrace scopes only when necessary; update `README.md` with required scopes and add an entry to `CHANGELOG.md` under `## Unreleased Changes` describing the addition.
+  - Run `npm run build` and `npm test` (and integration tests if your change touches network/auth) before submitting a PR.
+  - Preserve user-friendly error messages by leveraging `isClientRequestError` and the existing `handleClientRequestError` helper.
 
-## Coding Guidelines
+7. Useful file references
+  - Startup / registration: `src/index.ts`
+  - Auth / clients: `src/authentication/dynatrace-clients.ts`
+  - Env validation: `src/getDynatraceEnv.ts`
+  - Capabilities examples: `src/capabilities/execute-dql.ts`, `src/capabilities/list-problems.ts`, `src/capabilities/list-vulnerabilities.ts`
+  - Proxy handling: `src/utils/proxy-config.ts`
+  - Tests: see `integration-tests/` and `src/*/*.test.ts` for patterns
 
-Please try to follow basic TypeScript and Node.js coding conventions. We will define a concrete eslint setup at a later point.
-
-## Dependencies
-
-The following dependencies are allowed:
-
-- Core MCP SDK (`@modelcontextprotocol/sdk`),
-- environment utilities (`dotenv`),
-- ZOD schema validation (`zod-to-json-schema`),
-- the Dynatrace app framework (`dt-app`),
-- and `@dynatrace-sdk` packages.
-
-Please do not install any other dependencies.
-
-## Authentication
-
-For authentication, we are using OAuth Client ID and Secrets from Dynatrace. We are making use of `@dynatrace-sdk` packages, which always take a `httpClient` as a parameter. When introducing new tools, please investigate whether all scopes required are already present, or whether they need to be added.
-Make sure to not just update the code, but also update README.md with those required scopes.
-
-## Building and Running
-
-Try to build every change using `npm run build`, and verify that you can still start the server using `npm start`. The server should be able to run without any errors.
-The `dist/` folder contains the output of the build process.
-
-## Changelog
-
-- Whenever you add a new feature, please also add a new line into `CHANGELOG.md`. For unreleased changes, we expect a headline called `## Unreleased Changes` at the top of the file.
-- Follow the existing format:
-  - Use semantic versioning (major.minor.patch)
-  - Group changes by type (Added, Changed, Fixed, etc.)
-  - Keep entries concise but descriptive
+If any of these areas are unclear or you'd like more examples (e.g., a minimal new-tool scaffolding file), tell me which part to expand and I'll iterate. 
